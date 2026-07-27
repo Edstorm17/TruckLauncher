@@ -1,6 +1,9 @@
-import requests
+from typing import Any
 
-def auth_xbl(access_token) -> (str, str):
+import requests
+import jwt
+
+def auth_xbl(access_token) -> tuple[str, str]:
     url = "https://user.auth.xboxlive.com/user/authenticate"
     headers = {
         "Content-Type": "application/json",
@@ -26,7 +29,7 @@ def auth_xbl(access_token) -> (str, str):
     else:
         raise Exception("Failed to authenticate with Xbox Live", response.status_code)
 
-def auth_xsts(xbl_token) -> (str, str):
+def auth_xsts(xbl_token) -> tuple[str, str]:
     url = "https://xsts.auth.xboxlive.com/xsts/authorize"
     headers = {
         "Content-Type": "application/json",
@@ -70,3 +73,41 @@ def auth_mc(userhash, xsts_token) -> str:
         return mc_token
     else:
         raise Exception("Failed to authenticate with Minecraft", response.status_code)
+
+def check_ownership(mc_token) -> bool:
+    url = "https://api.minecraftservices.com/entitlements/mcstore"
+    headers = {
+        "Authorization": f"Bearer {mc_token}"
+    }
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        data = response.json()
+        if len(data.get("items")) == 0:
+            return False
+        entitlements = verify_signature(data.get("signature"))
+        if not entitlements:
+            return False
+        elif "game_minecraft" in entitlements:
+            return True
+        return False
+    else:
+        raise Exception("Failed to check game ownership", response.status_code)
+
+def fetch_profile(mc_token) -> dict:
+    url = "https://api.minecraftservices.com/minecraft/profile"
+    headers = {
+        "Authorization": f"Bearer {mc_token}"
+    }
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        profile_data = response.json()
+        return profile_data
+    else:
+        raise Exception("Failed to fetch profile", response.status_code)
+
+def verify_signature(jwt_token) -> list[Any]:
+    with open('public_key.txt', 'r', encoding='utf-8') as f:
+        mojang_public_key = f.read()
+    payload = jwt.decode(jwt_token, mojang_public_key, algorithms=['RS256'], leeway=10)
+    entitlements = [item.get("name") for item in payload.get("entitlements", [])]
+    return entitlements

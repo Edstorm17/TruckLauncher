@@ -1,5 +1,3 @@
-import atexit
-import os.path
 import msal
 import platform
 from msal import PublicClientApplication
@@ -10,19 +8,16 @@ from msal_extensions import (
     PersistedTokenCache
 )
 
+import config
 import util
-
-LAUNCHER_NAME: str
 
 SCOPES = ['XboxLive.signin', 'XboxLive.offline_access']
 cache_path = 'token_cache.bin'
 
 app: PublicClientApplication
 
-def init(launcher_name):
-    global LAUNCHER_NAME
+def init():
     global app
-    LAUNCHER_NAME = launcher_name
     ids = util.read_json_file("ids.json")
 
     app = msal.PublicClientApplication(
@@ -37,14 +32,14 @@ def get_encrypted_cache():
     elif platform.system() == 'Darwin':
         persistence = KeychainPersistence(
             cache_path,
-            service_name=LAUNCHER_NAME,
-            account_name='MinecraftPlayer'
+            service_name=config.LAUNCHER_ID,
+            account_name=config.LAUNCHER_ID + '-ms-token'
         )
     elif platform.system() == 'Linux':
         persistence = LibsecretPersistence(
             cache_path,
             schema_name='me.edstorm17.trucklauncher',
-            attributes={"application": LAUNCHER_NAME}
+            attributes={"application": config.LAUNCHER_ID}
         )
     else:
         raise Exception('Unsupported platform')

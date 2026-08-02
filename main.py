@@ -1,35 +1,26 @@
-import mslogin
+import threading
+import config
 import auth
-from auth import fetch_profile
-import launcher
-
-LAUNCHER_NAME = 'TruckLauncher'
-
-def authorise_for_minecraft():
-    access_token = mslogin.ms_signin()
-    xbl_token, userhash = auth.auth_xbl(access_token)
-    xsts_token, _ = auth.auth_xsts(xbl_token)
-    mc_token = auth.auth_mc(userhash, xsts_token)
-    if auth.check_ownership(mc_token):
-        print("Minecraft License owned")
-        return mc_token
-    else:
-        print("No ownership found")
-        return None
+import mslogin
+import ui
 
 def main():
-    mslogin.init(LAUNCHER_NAME)
-    mc_token = authorise_for_minecraft()
+    ui_thread = threading.Thread(target=ui.begin)
+    ui_thread.start()
+
+    mslogin.init()
+    mc_token = auth.authorise_for_minecraft()
     if mc_token is None:
         return
-    mc_profile = fetch_profile(mc_token)
-    print(mc_profile)
-    username = mc_profile.get("name")
-    uuid = mc_profile.get("id")
-    print('Username: ' + username)
-    print('UUID: ' + uuid)
-    print("Launching minecraft")
-    launcher.launch('1.21.11', username, uuid, mc_token)
+    config.TOKEN = mc_token
+
+    mc_profile = auth.fetch_profile(mc_token)
+    config.USERNAME = mc_profile["name"]
+    config.UUID = mc_profile["id"]
+    print('Username:', config.USERNAME)
+    print('UUID:', config.UUID)
+
+    ui_thread.join()
 
 if __name__ == '__main__':
     main()

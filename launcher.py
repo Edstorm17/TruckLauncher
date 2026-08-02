@@ -3,6 +3,7 @@ import os
 import platform
 from pathlib import Path
 import subprocess
+import util
 
 BRAND = 'TLauncher'
 
@@ -10,78 +11,11 @@ def debug(st):
     if os.getenv("DEBUG") is not None:
         print(st)
 
-def get_minecraft_path() -> Path:
-    home = Path.home()
-    if platform.system() == 'Windows':
-        mc_dir = home / "AppData" / "Roaming" / ".minecraft"
-    elif platform.system() == 'Darwin':
-        mc_dir = home / "Library" / "Application Support" / "minecraft"
-    elif platform.system() == 'Linux':
-        mc_dir = home / ".minecraft"
-    else:
-        raise Exception("Unsupported platform")
-
-    return mc_dir
-
-def get_natives_string(lib):
-    if platform.architecture()[0] == "64bit":
-        arch = "64"
-    elif platform.architecture()[0] == "32bit":
-        arch = "32"
-    else:
-        raise Exception("Architecture not supported")
-
-    natives_file = ""
-    if not "natives" in lib:
-        return natives_file
-
-    if "windows" in lib["natives"] and platform.system() == "Windows":
-        natives_file = lib["natives"]["windows"].replace("${arch}", arch)
-    elif "osx" in lib["natives"] and platform.system() == "Darwin":
-        natives_file = lib["natives"]["osx"].replace("${arch}", arch)
-    elif "linux" in lib["natives"] and platform.system() == "Linux":
-        natives_file = lib["natives"]["linux"].replace("${arch}", arch)
-    else:
-        raise Exception("Platform not supported")
-
-    return natives_file
-
-def should_use_library(lib):
-    def rule_says_yes(rule):
-        use_lib = None
-
-        if rule["action"] == "allow":
-            use_lib = False
-        elif rule["action"] == "disallow":
-            use_lib = True
-
-        if "os" in rule:
-            for key, value in rule["os"].items():
-                _os = platform.system()
-                if key == "name":
-                    if value == "windows" and _os != "Windows":
-                        return use_lib
-                    elif value == "osx" and _os != "Darwin":
-                        return use_lib
-                    elif value == "linux" and _os != "Linux":
-                        return use_lib
-
-        return not use_lib
-
-    if not "rules" in lib:
-        return True
-
-    for i in lib["rules"]:
-        if rule_says_yes(i):
-            return True
-
-    return False
-
 def get_classpath(lib, mc_dir: Path):
     cp: list = []
 
     for i in lib["libraries"]:
-        if not should_use_library(i):
+        if not util.should_use_library(i):
             continue
 
         name = i["name"]
@@ -98,9 +32,12 @@ def get_classpath(lib, mc_dir: Path):
 
         cp.append(lib_path / f'{lib_file_base}.{suffix}')
 
-        native = get_natives_string(i)
+        native = util.get_natives_string(i)
         if native != "":
-            cp.append(lib_path / f'{lib_file_base}-{native}.{suffix}')
+            if "downloads" in i and "path" in i["downloads"]["classifiers"][native]:
+                cp.append(mc_dir / "libraries" / i["downloads"]["classifiers"][native]["path"])
+            else:
+                cp.append(lib_path / f'{lib_file_base}-{native}.{suffix}')
 
     # Game Jar
     if "jar" in lib:
@@ -110,13 +47,22 @@ def get_classpath(lib, mc_dir: Path):
     return os.pathsep.join(str(p) for p in cp)
 
 def launch(version, username, uuid, access_token):
-    mc_dir = get_minecraft_path()
-    natives_dir = mc_dir / "versions" / version / "natives"
-    if not os.path.isfile(os.path.join(mc_dir, 'versions', version, f'{version}.json')):
-        raise Exception("Version not found")
-    with open(os.path.join(mc_dir, 'versions', version, f'{version}.json'), "r", encoding="utf-8") as f:
+    print("Launching Minecraft...")
+    mc_dir = util.get_minecraft_path()
+    if not os.path.isdir(mc_dir / "versions" / version):
+        raise Exception(f"Version not found")
+
+    with open(mc_dir / "versions" / version / f'{version}.json', "r", encoding="utf-8") as f:
         client_json = json.load(f)
 
+    if "javaVersion" in client_json:
+        java_path = util.get_executable_path(client_json["javaVersion"]["component"], mc_dir)
+        if java_path is None:
+            java_path = "java"
+    else:
+        java_path = "java"
+
+    natives_dir = mc_dir / "versions" / client_json["id"] / "natives"
     class_path = get_classpath(client_json, mc_dir)
     main_class = client_json["mainClass"]
     version_type = client_json["type"]
@@ -127,8 +73,9 @@ def launch(version, username, uuid, access_token):
     debug(version_type)
     debug(asset_index)
 
+    print(java_path)
     subprocess.call([
-        'java', # To check
+        java_path,
         f'-Djava.library.path={natives_dir}',
         f'-Dminecraft.launcher.brand={BRAND}',
         '-Dminecraft.launcher.version=2.1',
@@ -152,7 +99,9 @@ def launch(version, username, uuid, access_token):
         '--accessToken',
         access_token,
         '--versionType',
-        'release'
+        'release',
+        '--userType',
+        'msa'
     ])
 
 

@@ -1,7 +1,19 @@
-from typing import Any
-
 import requests
 import jwt
+
+import mslogin
+
+def authorise_for_minecraft():
+    access_token = mslogin.ms_signin()
+    xbl_token, userhash = auth_xbl(access_token)
+    xsts_token, _ = auth_xsts(xbl_token)
+    mc_token = auth_mc(userhash, xsts_token)
+    if check_ownership(mc_token):
+        print("Minecraft License owned")
+        return mc_token
+    else:
+        print("No ownership found")
+        return None
 
 def auth_xbl(access_token) -> tuple[str, str]:
     url = "https://user.auth.xboxlive.com/user/authenticate"
@@ -105,7 +117,7 @@ def fetch_profile(mc_token) -> dict:
     else:
         raise Exception("Failed to fetch profile", response.status_code)
 
-def verify_signature(jwt_token) -> list[Any]:
+def verify_signature(jwt_token) -> list:
     with open('public_key.txt', 'r', encoding='utf-8') as f:
         mojang_public_key = f.read()
     payload = jwt.decode(jwt_token, mojang_public_key, algorithms=['RS256'], leeway=10)

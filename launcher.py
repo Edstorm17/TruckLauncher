@@ -1,21 +1,16 @@
 import json
 import os
-import platform
 from pathlib import Path
 import subprocess
+
+import config
 import util
-
-BRAND = 'TLauncher'
-
-def debug(st):
-    if os.getenv("DEBUG") is not None:
-        print(st)
 
 def get_classpath(lib, mc_dir: Path):
     cp: list = []
 
     for i in lib["libraries"]:
-        if not util.should_use_library(i):
+        if "rules" in i and not util.rules_say_yes(i["rules"]):
             continue
 
         name = i["name"]
@@ -46,63 +41,164 @@ def get_classpath(lib, mc_dir: Path):
         cp.append(mc_dir / "versions" / lib["id"] / f'{lib["id"]}.jar')
     return os.pathsep.join(str(p) for p in cp)
 
-def launch(version, username, uuid, access_token):
+def replace_arguments(
+        arg: str,
+        client_json,
+        mc_dir: Path,
+        natives_dir: Path,
+        classpath: str,
+        username: str,
+        uuid: str,
+        access_token: str,
+        game_dir: Path,
+) -> str:
+    arg = arg.replace("${natives_directory}", str(natives_dir))
+    arg = arg.replace("${launcher_name}", config.LAUNCHER_NAME)
+    arg = arg.replace("${launcher_version}", config.VERSION)
+    arg = arg.replace("${classpath}", classpath)
+    arg = arg.replace("${auth_player_name}", username)
+    arg = arg.replace("${version_name}", client_json["id"])
+    arg = arg.replace("${game_directory}", str(game_dir))
+    arg = arg.replace("${assets_root}", str(mc_dir / "assets"))
+    arg = arg.replace("${assets_index_name}", client_json["assetIndex"]["id"])
+    arg = arg.replace("${auth_uuid}", uuid)
+    arg = arg.replace("${auth_access_token}", access_token)
+    arg = arg.replace("${user_type}", "msa")
+    arg = arg.replace("${version_type}", client_json["type"])
+    arg = arg.replace("${user_properties}", "{}")
+    arg = arg.replace("${resolution_width}", "854")
+    arg = arg.replace("${resolution_height}", "480")
+    arg = arg.replace("${game_assets}", str(mc_dir / "assets" / "virtual" / "legacy"))
+    arg = arg.replace("${auth_session}", access_token)
+    arg = arg.replace("${library_directory}", str(mc_dir / "libraries"))
+    arg = arg.replace("${classpath_separator}", os.pathsep)
+    return arg
+
+def get_arguments_string(
+        client_json: dict,
+        mc_dir: Path,
+        natives_dir: Path,
+        classpath: str,
+        username: str,
+        uuid: str,
+        access_token: str,
+        game_dir: Path
+) -> list[str]:
+    arg_list: list[str] = []
+
+    for arg in client_json["minecraftArguments"].split(" "):
+        arg = replace_arguments(arg, client_json, mc_dir, natives_dir, classpath, username, uuid, access_token, game_dir)
+        arg_list.append(arg)
+
+    return arg_list
+
+def get_arguments(
+        args: list,
+        client_json: dict,
+        mc_dir: Path,
+        natives_dir: Path,
+        classpath: str,
+        username: str,
+        uuid: str,
+        access_token: str,
+        game_dir: Path
+) -> list[str]:
+    arg_list: list[str] = []
+    for arg in args:
+        if isinstance(arg, str):
+            arg_list.append(replace_arguments(arg, client_json, mc_dir, natives_dir, classpath, username, uuid, access_token, game_dir))
+        else:
+            if "compatibilityRules" in arg and not util.rules_say_yes(arg["compatibilityRules"]):
+                continue
+
+            if "rules" in arg and not util.rules_say_yes(arg["rules"]):
+                continue
+
+            if isinstance(arg["value"], str):
+                arg_list.append(replace_arguments(arg["value"], client_json, mc_dir, natives_dir, classpath, username, uuid, access_token, game_dir))
+            else:
+                for v in arg["value"]:
+                    v = replace_arguments(v, client_json, mc_dir, natives_dir, classpath, username, uuid, access_token, game_dir)
+                    arg_list.append(v)
+    return arg_list
+
+def launch(launch_profile: dict, username: str, uuid: str, access_token: str, mc_dir: Path = util.get_minecraft_path()):
     print("Launching Minecraft...")
-    mc_dir = util.get_minecraft_path()
-    if not os.path.isdir(mc_dir / "versions" / version):
+    version = launch_profile["version_id"]
+    if not (mc_dir / "versions" / version).is_dir():
         raise Exception(f"Version not found")
 
     with open(mc_dir / "versions" / version / f'{version}.json', "r", encoding="utf-8") as f:
         client_json = json.load(f)
 
+    if "inheritsFrom" in client_json:
+        client_json = util.inherit_json(client_json, mc_dir)
+
+    class_path = get_classpath(client_json, mc_dir)
+    natives_dir = mc_dir / "versions" / client_json["id"] / "natives"
+    game_dir = mc_dir / "tlauncher" / launch_profile["profile_id"]
+
+    command_args: list[str] = []
     if "javaVersion" in client_json:
         java_path = util.get_executable_path(client_json["javaVersion"]["component"], mc_dir)
         if java_path is None:
-            java_path = "java"
+            command_args.append("java")
+        else:
+            command_args.append(java_path)
     else:
-        java_path = "java"
+        command_args.append("java")
 
-    natives_dir = mc_dir / "versions" / client_json["id"] / "natives"
-    class_path = get_classpath(client_json, mc_dir)
-    main_class = client_json["mainClass"]
-    version_type = client_json["type"]
-    asset_index = client_json["assetIndex"]["id"]
+    if isinstance(client_json.get("arguments", None), dict):
+        if "jvm" in client_json["arguments"]:
+            command_args = command_args + get_arguments(client_json["arguments"]["jvm"], client_json, mc_dir, natives_dir, class_path, username, uuid, access_token, game_dir)
+        else:
+            command_args.append(f"-Djava.library.path={natives_dir}")
+            command_args.append("-cp")
+            command_args.append(class_path)
+    else:
+        command_args.append(f"-Djava.library.path={natives_dir}")
+        command_args.append("-cp")
+        command_args.append(class_path)
 
-    debug(class_path)
-    debug(main_class)
-    debug(version_type)
-    debug(asset_index)
+    command_args.append(client_json["mainClass"])
 
-    print(java_path)
-    subprocess.call([
-        java_path,
-        f'-Djava.library.path={natives_dir}',
-        f'-Dminecraft.launcher.brand={BRAND}',
-        '-Dminecraft.launcher.version=2.1',
-        '-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump',
-        '-Xmx4G',
-        '-cp',
-        class_path,
-        main_class,
-        '--username',
-        username,
-        '--version',
-        version,
-        '--gameDir',
-        mc_dir,
-        '--assetsDir',
-        os.path.join(mc_dir, 'assets'),
-        '--assetIndex',
-        asset_index,
-        '--uuid',
-        uuid,
-        '--accessToken',
-        access_token,
-        '--versionType',
-        'release',
-        '--userType',
-        'msa'
-    ])
+    if "minecraftArguments" in client_json:
+        command_args = command_args + get_arguments_string(client_json, mc_dir, natives_dir, class_path, username, uuid, access_token, game_dir)
+    else:
+        command_args = command_args + get_arguments(client_json["arguments"]["game"], client_json, mc_dir, natives_dir, class_path, username, uuid, access_token, game_dir)
+
+    subprocess.run(command_args)
+
+    # subprocess.run([
+    #     java_path,
+    #     f'-Djava.library.path={natives_dir}',
+    #     f'-Dminecraft.launcher.brand={config.LAUNCHER_NAME}',
+    #     '-Dminecraft.launcher.version=2.1',
+    #     '-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump',
+    #     '-Xmx4G',
+    #     '-cp',
+    #     class_path,
+    #     main_class,
+    #     '--username',
+    #     username,
+    #     '--version',
+    #     version,
+    #     '--gameDir',
+    #     game_dir,
+    #     '--assetsDir',
+    #     os.path.join(mc_dir, 'assets'),
+    #     '--assetIndex',
+    #     asset_index,
+    #     '--uuid',
+    #     uuid,
+    #     '--accessToken',
+    #     access_token,
+    #     '--versionType',
+    #     'release',
+    #     '--userType',
+    #     'msa',
+    #     '--enable-native-access=ALL-UNNAMED'
+    # ])
 
 
 

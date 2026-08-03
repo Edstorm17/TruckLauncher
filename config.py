@@ -3,3 +3,4 @@ UUID = None
 TOKEN = None
 LAUNCHER_NAME = 'TruckLauncher'
 LAUNCHER_ID = 'truck-launcher'
+VERSION = '1.0.0'

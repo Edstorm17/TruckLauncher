@@ -1,4 +1,6 @@
+import io
 import lzma
+import re
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -7,8 +9,11 @@ import json
 import platform
 import shutil
 from pathlib import Path
+import xml.etree.ElementTree as ET
+import zipfile
 
 import requests
+import unicodedata
 
 _JAVA_MANIFEST_URL = "https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json"
 
@@ -27,7 +32,7 @@ def download_file(url: str, path: Path, sha1: str | None = None, lzma_compressed
 
     try:
         Path.mkdir(path.parent, parents=True, exist_ok=True)
-    except Exception:
+    except FileExistsError:
         pass
 
     if session is None:
@@ -58,20 +63,28 @@ def get_user_agent():
     global _user_agent_cache
     if _user_agent_cache is not None:
         return _user_agent_cache
-    else:
-        return ""
 
-def get_sha1_hash(path: Path) -> str:
+def get_sha1_hash(file: Path | io.BufferedIOBase) -> str:
     buf_size = 65536
     sha1 = hashlib.sha1()
-    with open(path, 'rb') as f:
+    def _get_hash(fi: io.BufferedIOBase):
         while True:
-            data = f.read(buf_size)
+            data = fi.read(buf_size)
             if not data:
                 break
             sha1.update(data)
-    return sha1.hexdigest()
+        return sha1.hexdigest()
 
+    if isinstance(file, io.BufferedIOBase):
+        return _get_hash(file)
+    else:
+        with open(file, 'rb') as f:
+            return _get_hash(f)
+
+def extract_to_dest(zf: zipfile.ZipFile, filename: str, dest_path: Path):
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with zf.open(filename) as source, open(dest_path, "wb") as target:
+        target.write(source.read())
 
 def get_minecraft_path() -> Path:
     home = Path.home()
@@ -172,32 +185,29 @@ def get_executable_path(java_version: str, mc_directory):
     else:
         return None
 
-def should_use_library(lib):
+def rules_say_yes(rules):
     def rule_says_yes(rule):
-        use_lib = None
+        use = None
 
         if rule["action"] == "allow":
-            use_lib = False
+            use = False
         elif rule["action"] == "disallow":
-            use_lib = True
+            use = True
 
         if "os" in rule:
             for key, value in rule["os"].items():
                 _os = platform.system()
                 if key == "name":
                     if value == "windows" and _os != "Windows":
-                        return use_lib
+                        return use
                     elif value == "osx" and _os != "Darwin":
-                        return use_lib
+                        return use
                     elif value == "linux" and _os != "Linux":
-                        return use_lib
+                        return use
 
-        return not use_lib
+        return not use
 
-    if not "rules" in lib:
-        return True
-
-    for i in lib["rules"]:
+    for i in rules:
         if rule_says_yes(i):
             return True
 
@@ -226,6 +236,43 @@ def get_natives_string(lib):
 
     return natives_file
 
+def _get_lib_name_without_version(lib) -> str:
+    return ":".join(lib["name"].split(":")[:-1])
+
+def inherit_json(original_json: dict, mc_dir: Path) -> dict:
+    inherit_version = original_json["inheritsFrom"]
+
+    with open(mc_dir / "versions" / inherit_version / f"{inherit_version}.json", "r") as f:
+        new_json = json.load(f)
+
+    original_libs: dict[str, bool] = {}
+    for current_lib in original_json.get("libraries", []):
+        lib_name = _get_lib_name_without_version(current_lib)
+        original_libs[lib_name] = True
+
+    lib_list = original_json.get("libraries", [])
+    for current_lib in new_json.get("libraries", []):
+        lib_name = _get_lib_name_without_version(current_lib)
+        if lib_name not in original_libs:
+            lib_list.append(current_lib)
+
+    new_json["libraries"] = lib_list
+
+    for key, value in original_json.items():
+        if key == "libraries":
+            continue
+
+        if isinstance(value, list) and isinstance(new_json.get(key, None), list):
+            new_json[key] = value + new_json[key]
+        elif isinstance(value, dict) and isinstance(new_json.get(key, None), dict):
+            for a, b in value.items():
+                if isinstance(b, list):
+                    new_json[key][a] = b + new_json[key][a]
+        else:
+            new_json[key] = value
+
+    return new_json
+
 def get_vanilla_versions_list() -> list:
     versions_json = requests.get("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json").json()
     return versions_json["versions"]
@@ -235,10 +282,24 @@ def get_fabric_versions_list() -> list:
     return versions_json
 
 def get_fabric_loader_list() -> list:
-    loader_json = requests.get("https://meta.fabricmc.net/v2/versions/loader/").json()
-    return loader_json
+    loaders_json = requests.get("https://meta.fabricmc.net/v2/versions/loader").json()
+    return loaders_json
 
-def get_installed_versions(mc_dir: Path) -> list:
+def get_forge_versions() -> dict[str, list[str]]:
+    versions_xml = ET.fromstring(requests.get("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml").text)
+    versions = [v.text for v in versions_xml.findall(".//version")]
+    versions_dict = {}
+    for version in versions:
+        parts = version.split("-")
+        game_ver = parts[0]
+        loader_ver = "-".join(parts[1:])
+        versions_dict[game_ver] = versions_dict.get(game_ver, []) + [loader_ver]
+    return versions_dict
+
+def sort_versions(versions: list[str]) -> list[str]:
+    return sorted(versions, key=lambda x: [int(i) for i in x.split("-")[0].split("_")[0].split(".")], reverse=True)
+
+def get_installed_versions(mc_dir: Path = get_minecraft_path()) -> list:
     versions: list = []
     for version in (mc_dir / "versions").iterdir():
         if not (version / f"{version.name}.json").is_file():
@@ -254,3 +315,45 @@ def get_installed_versions(mc_dir: Path) -> list:
 
         versions.append({"id": client_json["id"], "type": client_json["type"], "release_time": release_time})
     return versions
+
+def get_launch_profiles(mc_dir: Path = get_minecraft_path()) -> list:
+    path = mc_dir / "tlauncher" / "launch_profiles.json"
+    if not path.is_file():
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def get_launch_profile_by_name(name: str) -> dict | None:
+    return next((profile for profile in get_launch_profiles() if profile.get("profile_name") == name), None)
+
+def add_launch_profile(name: str, version_id: str, mc_dir: Path = get_minecraft_path()):
+    profiles = get_launch_profiles(mc_dir)
+
+    profile_id = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    profile_id = profile_id.lower()
+    profile_id = re.sub(r"[^a-z0-9-_.]", "-", profile_id)
+    profile_id = re.sub(r"-+", "-", profile_id).strip("-")
+
+    if not profile_id.strip():
+        return False
+    if any(profile.get("profile_id") == profile_id or profile.get("profile_name") == name for profile in profiles):
+        return False
+
+    profiles.append({
+        "profile_name": name,
+        "profile_id": profile_id,
+        "version_id": version_id,
+        "last_use_time": datetime.now().isoformat()
+    })
+
+    path = mc_dir / "tlauncher" / "launch_profiles.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        pass
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(profiles, f, indent=4)
+
+    return True
+

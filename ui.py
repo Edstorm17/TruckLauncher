@@ -1,6 +1,8 @@
 import threading
+from functools import partial
 from tkinter import *
 from tkinter import ttk, messagebox
+from typing import TypedDict, Callable
 
 import config
 import installer
@@ -42,86 +44,71 @@ def refresh_dropdown_values():
             dropdown.current(0)
 
 def create_add_window():
-    vanilla_versions = util.get_vanilla_versions_list()
-    forge_versions = util.get_forge_versions()
-    fabric_versions = util.get_fabric_versions_list()
-    fabric_loaders = util.get_fabric_loader_list()
-
     add_window = Toplevel(root)
     add_window.title("Add Installation")
     ttk.Label(add_window, text="Profile name:").grid(column=0, row=0, padx=5, pady=5)
     name_entry = ttk.Entry(add_window, width=20)
     name_entry.grid(column=1, row=0, padx=5, pady=5)
     tabs = ttk.Notebook(add_window)
-    tab_vanilla = ttk.Frame(tabs, padding=20, name="vanilla")
-    tab_forge = ttk.Frame(tabs, padding=20, name="forge")
-    tab_fabric = ttk.Frame(tabs, padding=20, name="fabric")
-    tabs.add(tab_vanilla, text="Vanilla")
-    tabs.add(tab_forge, text="Forge")
-    tabs.add(tab_fabric, text="Fabric")
     tabs.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
 
-    ttk.Label(tab_vanilla, text="Minecraft Version").grid(column=0, row=0, padx=5, pady=5)
-    vanilla_selected_version = StringVar()
-    vanilla_versions_dropdown = ttk.Combobox(tab_vanilla, textvariable=vanilla_selected_version)
-    vanilla_versions_dropdown['values'] = [v["id"] for v in vanilla_versions]
-    vanilla_versions_dropdown.grid(column=1, row=0, padx=5, pady=5)
-    vanilla_versions_dropdown.current(0)
+    class LoaderTab(ttk.Frame):
+        install_command: Callable[[], str]
 
-    def update_forge_loaders_dropdown(_):
-        forge_loaders_dropdown['values'] = util.sort_versions(forge_versions.get(forge_selected_version.get(), []))
-        if len(forge_loaders_dropdown['values']) > 0:
-            forge_loaders_dropdown.current(0)
+    class TabField(TypedDict, total=False):
+        name: str
+        values: list
+        selection_event: Callable[[Event, list[ttk.Combobox]], object] | None
 
-    ttk.Label(tab_forge, text="Minecraft Version").grid(column=0, row=0, padx=5, pady=5)
-    forge_selected_version = StringVar()
-    forge_versions_dropdown = ttk.Combobox(tab_forge, textvariable=forge_selected_version)
-    forge_versions_dropdown['values'] = util.sort_versions(list(forge_versions))
-    forge_versions_dropdown.grid(column=1, row=0, padx=5, pady=5)
-    forge_versions_dropdown.current(0)
-    forge_versions_dropdown.bind("<<ComboboxSelected>>", update_forge_loaders_dropdown)
-    ttk.Label(tab_forge, text="Loader Version").grid(column=0, row=1, padx=5, pady=5)
-    forge_selected_loader = StringVar()
-    forge_loaders_dropdown = ttk.Combobox(tab_forge, textvariable=forge_selected_loader)
-    update_forge_loaders_dropdown(None)
-    forge_loaders_dropdown.grid(column=1, row=1, padx=5, pady=5)
-    forge_loaders_dropdown.current(0)
+    def add_tab(tab_name: str, fields: list[TabField], install_command: Callable[..., str]):
+        tab = LoaderTab(tabs, padding=20)
+        tabs.add(tab, text=tab_name)
+        dropdowns: list[ttk.Combobox] = []
+        for i in range(len(fields)):
+            field = fields[i]
+            ttk.Label(tab, text=field.get("name", "")).grid(column=0, row=i, padx=5, pady=5)
+            values = field.get("values", [])
+            field_dropdown = ttk.Combobox(tab, values=values)
+            field_dropdown.grid(column=1, row=i, padx=5, pady=5)
+            dropdowns.append(field_dropdown)
+            if len(values) > 0:
+                field_dropdown.current(0)
+            if field.get("selection_event") is not None:
+                field_dropdown.bind("<<ComboboxSelected>>", partial(lambda f, d, e: f.get("selection_event")(e, d), field, dropdowns))
+        tab.install_command = lambda: install_command(*[d.get() for d in dropdowns])
 
-    ttk.Label(tab_fabric, text="Minecraft Version").grid(column=0, row=0, padx=5, pady=5)
-    fabric_selected_version = StringVar()
-    fabric_versions_dropdown = ttk.Combobox(tab_fabric, textvariable=fabric_selected_version)
-    fabric_versions_dropdown['values'] = [v["version"] for v in fabric_versions]
-    fabric_versions_dropdown.grid(row=0, column=1, padx=5, pady=5)
-    fabric_versions_dropdown.current(0)
-    ttk.Label(tab_fabric, text="Loader Version").grid(column=0, row=1, padx=5, pady=5)
-    fabric_selected_loader = StringVar()
-    fabric_loaders_dropdown = ttk.Combobox(tab_fabric, textvariable=fabric_selected_loader)
-    fabric_loaders_dropdown['values'] = [v["version"] for v in fabric_loaders]
-    fabric_loaders_dropdown.grid(row=1, column=1, padx=5, pady=5)
+    forge_versions = util.get_forge_versions()
+
+    def update_forge_loaders_dropdown(_, dropdowns: list[ttk.Combobox]):
+        dropdowns[1]['values'] = util.sort_versions(forge_versions.get(dropdowns[0].get(), []))
+        if len(dropdowns[1]['values']) > 0:
+            dropdowns[1].current(0)
+
+    # noinspection PyTypeChecker
+    add_tab("Vanilla", [{"name": "Minecraft Version", "values": [v["id"] for v in util.get_vanilla_versions_list()]}], installer.install_vanilla_json)
+    forge_versions_list = util.sort_versions(list(forge_versions))
+    # noinspection PyTypeChecker
+    add_tab("Forge", [
+        {"name": "Minecraft Version", "values": forge_versions_list, "selection_event": update_forge_loaders_dropdown},
+        {"name": "Forge Version", "values": util.sort_versions(forge_versions.get(forge_versions_list[0], []))}
+    ], installer.install_forge_json)
+    # noinspection PyTypeChecker
+    add_tab("Fabric", [
+        {"name": "Minecraft Version", "values": [v["version"] for v in util.get_fabric_versions_list()]},
+        {"name": "Loader Version", "values": [v["version"] for v in util.get_fabric_loader_list()]}
+    ], installer.install_fabric_json)
 
     def handle_install_button_click():
-        nonlocal tab_vanilla
-        nonlocal tab_fabric
-
         profile_name = name_entry.get()
         if not profile_name.strip():
             show_error_message("Please enter a valid profile name")
             return
 
-        def handle_install_callback(version_id: str):
-            if not util.add_launch_profile(profile_name, version_id):
-                show_error_message("Profile with same name already exists")
+        active_tab: LoaderTab = tabs.nametowidget(tabs.select())
+        version_id = active_tab.install_command()
+        if not util.add_launch_profile(profile_name, version_id):
+            show_error_message("Profile with same name already exists")
 
-        if tabs.select() == str(tab_vanilla):
-            install_command = lambda: handle_install_callback(installer.install_vanilla_json(vanilla_selected_version.get()))
-        elif tabs.select() == str(tab_fabric):
-            install_command = lambda: handle_install_callback(installer.install_fabric_json(fabric_selected_version.get(), fabric_selected_loader.get()))
-        elif tabs.select() == str(tab_forge):
-            install_command = lambda: handle_install_callback(installer.install_forge_json(forge_selected_version.get(), forge_selected_loader.get()))
-        else:
-            raise Exception("Invalid mod loader")
-
-        install_command()
         add_window.destroy()
         refresh_dropdown_values()
         show_success_message("Installed successfully")

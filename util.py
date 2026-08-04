@@ -2,6 +2,7 @@ import io
 import lzma
 import re
 import stat
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import hashlib
@@ -197,6 +198,7 @@ def rules_say_yes(rules):
         if "os" in rule:
             for key, value in rule["os"].items():
                 _os = platform.system()
+                _arch = platform.architecture()[0]
                 if key == "name":
                     if value == "windows" and _os != "Windows":
                         return use
@@ -204,6 +206,27 @@ def rules_say_yes(rules):
                         return use
                     elif value == "linux" and _os != "Linux":
                         return use
+                elif key == "arch":
+                    if value == "x86" and _arch != "32bit":
+                        return use
+                elif key == "version":
+                    if not re.match(value, get_os_version()):
+                        return use
+
+        if "features" in rule:
+            for key in rule["features"].keys():
+                if key == "has_custom_resolution":
+                    return use
+                elif key == "is_demo_user":
+                    return use
+                elif key == "has_quick_plays_support":
+                    return use
+                elif key == "is_quick_play_singleplayer":
+                    return use
+                elif key == "is_quick_play_multiplayer":
+                    return use
+                elif key == "is_quick_play_realms":
+                    return use
 
         return not use
 
@@ -357,3 +380,11 @@ def add_launch_profile(name: str, version_id: str, mc_dir: Path = get_minecraft_
 
     return True
 
+def get_os_version() -> str:
+    if platform.system() == "Windows":
+        ver = sys.getwindowsversion()
+        return f"{ver.major}.{ver.minor}"
+    elif platform.system() == "Darwin":
+        return ""
+    else:
+        return platform.uname().release

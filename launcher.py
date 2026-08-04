@@ -167,38 +167,4 @@ def launch(launch_profile: dict, username: str, uuid: str, access_token: str, mc
     else:
         command_args = command_args + get_arguments(client_json["arguments"]["game"], client_json, mc_dir, natives_dir, class_path, username, uuid, access_token, game_dir)
 
-    subprocess.run(command_args)
-
-    # subprocess.run([
-    #     java_path,
-    #     f'-Djava.library.path={natives_dir}',
-    #     f'-Dminecraft.launcher.brand={config.LAUNCHER_NAME}',
-    #     '-Dminecraft.launcher.version=2.1',
-    #     '-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump',
-    #     '-Xmx4G',
-    #     '-cp',
-    #     class_path,
-    #     main_class,
-    #     '--username',
-    #     username,
-    #     '--version',
-    #     version,
-    #     '--gameDir',
-    #     game_dir,
-    #     '--assetsDir',
-    #     os.path.join(mc_dir, 'assets'),
-    #     '--assetIndex',
-    #     asset_index,
-    #     '--uuid',
-    #     uuid,
-    #     '--accessToken',
-    #     access_token,
-    #     '--versionType',
-    #     'release',
-    #     '--userType',
-    #     'msa',
-    #     '--enable-native-access=ALL-UNNAMED'
-    # ])
-
-
-
+    subprocess.run(command_args, cwd=game_dir)
